@@ -1,0 +1,290 @@
+blueprint:
+  name: Smart Ventilation v2 (Sensor Triggered)
+  description: AH-based ventilation with sensor triggers instead of polling
+  domain: automation
+  input:
+    # Room Configuration
+    room_name:
+      name: Room Name
+      selector:
+        text:
+
+    # Sensors - Indoor
+    temp_inside:
+      name: Indoor Temperature Sensor
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+
+    rh_inside:
+      name: Indoor Humidity Sensor
+      selector:
+        entity:
+          domain: sensor
+          device_class: humidity
+
+    ah_diff_sensor:
+      name: AH Difference Sensor
+      description: "Template sensor showing AH difference (room - outside)"
+      selector:
+        entity:
+          domain: sensor
+
+    # Window Sensors
+    window_sensors:
+      name: Window/Door Sensors
+      description: "Select all windows and doors for this room"
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: opening
+          multiple: true
+
+    # Thresholds (Shared Helpers)
+    ah_threshold_helper:
+      name: AH Difference Threshold Helper
+      description: "Shared across all rooms (e.g., input_number.prog_roznicy_ah_do_wentylacji)"
+      selector:
+        entity:
+          domain: input_number
+
+    rh_limit_helper:
+      name: Humidity Threshold Helper
+      description: "Shared across all rooms (e.g., input_number.prog_wilgotnosci_do_wentylacji)"
+      selector:
+        entity:
+          domain: input_number
+
+    # Notification Settings
+    notify_services:
+      name: Notify Services (one per line)
+      description: "Enter notify services, one per line (e.g., notify.mobile_app_telefon_janka)"
+      default: "notify.mobile_app_telefon_janka"
+      selector:
+        text:
+          multiline: true
+
+    frequency_cooldown:
+      name: Notification Cooldown (Hours)
+      description: "Minimum time between notifications"
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 24
+          unit_of_measurement: "h"
+
+    # Notification Messages
+    notification_open_title:
+      name: Open Window Notification Title
+      description: "Title for ventilation needed notification"
+      default: "🌬️ Wentylacja: {room}"
+      selector:
+        text:
+
+    notification_open_message:
+      name: Open Window Notification Message
+      description: "Message for ventilation needed. Available variables: {room}, {humidity}, {ah_diff}"
+      default: "Wilgotność: {humidity}%. Różnica AH: {ah_diff} g/m³. Otwórz okno!"
+      selector:
+        text:
+          multiline: true
+
+    notification_close_title:
+      name: Close Window Notification Title
+      description: "Title for close window notification"
+      default: "🚪 Zamknij okno: {room}"
+      selector:
+        text:
+
+    notification_close_message:
+      name: Close Window Notification Message
+      description: "Message for close window. Available variables: {room}, {ah_diff}"
+      default: "Różnica AH spadła do {ah_diff} g/m³. Zamknij okno."
+      selector:
+        text:
+          multiline: true
+
+    # Quiet Hours (Shared Helpers)
+    quiet_hours_start:
+      name: Quiet Hours Start Helper
+      description: "Shared across all rooms (e.g., input_datetime.wentylacja_cisza_start)"
+      selector:
+        entity:
+          domain: input_datetime
+
+    quiet_hours_end:
+      name: Quiet Hours End Helper
+      description: "Shared across all rooms (e.g., input_datetime.wentylacja_cisza_koniec)"
+      selector:
+        entity:
+          domain: input_datetime
+
+    # Tracking Helper
+    last_notified_input:
+      name: Last Notification Time Helper
+      description: "Unique per room - tracks when last notification was sent"
+      selector:
+        entity:
+          domain: input_datetime
+
+trigger:
+  # Trigger when AH difference exceeds threshold
+  - platform: numeric_state
+    entity_id: !input ah_diff_sensor
+    above: input_number.prog_roznicy_ah_do_wentylacji
+    id: "ah_high"
+
+  # Trigger when AH difference drops (for close window notification)
+  - platform: template
+    value_template: >
+      {{ states(input_ah_diff) | float(0) <= (states(input_ah_threshold) | float(3) / 2) }}
+    id: "ah_low"
+
+  # Trigger when window opens
+  - platform: state
+    entity_id: !input window_sensors
+    to: "on"
+    id: "window_opened"
+
+  # Trigger when humidity changes significantly
+  - platform: state
+    entity_id: !input rh_inside
+    id: "humidity_changed"
+
+condition:
+  # Only run if input entities are available
+  - condition: template
+    value_template: >
+      {{ states(input_ah_diff) not in ['unknown', 'unavailable'] }}
+
+action:
+  - variables:
+      input_ah_diff: !input ah_diff_sensor
+      rh_in_entity: !input rh_inside
+      windows: !input window_sensors
+      room: !input room_name
+      ah_threshold_entity: !input ah_threshold_helper
+      rh_threshold_entity: !input rh_limit_helper
+      notify_list: !input notify_services
+      cooldown: !input frequency_cooldown
+      quiet_start_entity: !input quiet_hours_start
+      quiet_end_entity: !input quiet_hours_end
+      last_notified_entity: !input last_notified_input
+      tag_id: "{{ 'vent_' ~ room | lower | replace(' ', '_') }}"
+
+      # Notification text templates
+      msg_open_title: !input notification_open_title
+      msg_open_body: !input notification_open_message
+      msg_close_title: !input notification_close_title
+      msg_close_body: !input notification_close_message
+
+      rh_in: "{{ states(rh_in_entity) | float(0) }}"
+
+      # Read thresholds from helpers
+      ah_limit: "{{ states(ah_threshold_entity) | float(3) }}"
+      rh_target: "{{ states(rh_threshold_entity) | float(50) }}"
+
+      # Read quiet hours from helpers
+      quiet_start: "{{ states(quiet_start_entity) }}"
+      quiet_end: "{{ states(quiet_end_entity) }}"
+
+      # Get current AH difference from sensor
+      delta_af: "{{ states(input_ah_diff) | float(0) }}"
+
+  - variables:
+      any_window_open: "{{ expand(windows) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+      notify_targets: "{{ notify_list.split('\n') | map('trim') | select() | list }}"
+      hours_since_notify: >
+        {% set last = states(last_notified_entity) %}
+        {% if last in ['unknown', 'unavailable', 'none'] %}
+          999
+        {% else %}
+          {{ ((as_timestamp(now()) - as_timestamp(last)) / 3600) | float(999) }}
+        {% endif %}
+
+      # Check if we're in quiet hours
+      in_quiet_hours: >
+        {% set current = now().strftime('%H:%M:%S') %}
+        {% if quiet_start < quiet_end %}
+          {{ current >= quiet_start and current < quiet_end }}
+        {% else %}
+          {{ current >= quiet_start or current < quiet_end }}
+        {% endif %}
+
+  - choose:
+      # OPTION 1: Window opened -> Clear notification
+      - conditions:
+          - condition: trigger
+            id: "window_opened"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_id }}"
+
+      # OPTION 2: Ventilation needed
+      - conditions:
+          - condition: template
+            value_template: "{{ delta_af > ah_limit }}"
+          - condition: template
+            value_template: "{{ rh_in > rh_target }}"
+          - condition: template
+            value_template: "{{ not in_quiet_hours }}"
+          - condition: template
+            value_template: "{{ not any_window_open }}"
+          - condition: template
+            value_template: "{{ hours_since_notify > cooldown }}"
+        sequence:
+          - service: input_datetime.set_datetime
+            target:
+              entity_id: !input last_notified_input
+            data:
+              datetime: "{{ now().isoformat() }}"
+
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: >
+                      {{ msg_open_title.replace('{room}', room) }}
+                    message: >
+                      {{ msg_open_body
+                         .replace('{room}', room)
+                         .replace('{humidity}', rh_in | round(0) | string)
+                         .replace('{ah_diff}', delta_af | round(1) | string) }}
+                    data:
+                      tag: "{{ tag_id }}"
+                      priority: high
+                      ttl: 0
+
+      # OPTION 3: Close window
+      - conditions:
+          - condition: template
+            value_template: "{{ delta_af <= (ah_limit / 2) }}"
+          - condition: template
+            value_template: "{{ any_window_open }}"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: >
+                      {{ msg_close_title.replace('{room}', room) }}
+                    message: >
+                      {{ msg_close_body
+                         .replace('{room}', room)
+                         .replace('{ah_diff}', delta_af | round(1) | string) }}
+                    data:
+                      tag: "{{ tag_id }}"
+                      priority: high
+                      ttl: 0
+
+mode: single
