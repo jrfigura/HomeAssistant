@@ -1,15 +1,20 @@
 blueprint:
-  name: "ZHA - TS004F Rotary Knob (Modernized)"
+  name: "ZHA - TS004F Rotary Knob (Fixed)"
   description: |
-    Complete blueprint for Tuya TS004F rotary knob.
-    Works with the custom quirk for _TZ3000_402vrq2i:
+    Complete blueprint for Tuya TS004F rotary knob with DEVICE TRIGGERS.
+    
+    Works with the custom quirk for _TZ3000_402vrq2i that uses
+    device_automation_triggers (not raw zha_events).
     https://github.com/jrfigura/HomeAssistant/blob/main/zha_custom_quirks/ts004f_402vrq2i.py
     
     Supports:
-    - Dimmer Mode (Command: step)
-    - Scene Mode (Command: left/right)
-    - Press & Rotate (Command: step_color_temp)
     - Single, Double, and Long Press actions
+    - Rotate Left/Right
+    - Optional debounce delay for rotation
+    
+    Compatible with Scene Mode quirk that sends:
+    - press_type commands for button presses
+    - left/right commands for rotation
   domain: automation
   input:
     remote:
@@ -19,10 +24,9 @@ blueprint:
         device:
           integration: zha
           model: TS004F
-
     rotation_debounce_delay:
       name: Rotation Debounce Delay (ms)
-      description: Prevents accidental rotation triggers when clicking.
+      description: Prevents accidental rotation triggers when clicking button.
       default: 100
       selector:
         number:
@@ -31,92 +35,112 @@ blueprint:
           step: 50
           unit_of_measurement: "ms"
           mode: slider
-
     # ACTIONS
     button_single_press:
       name: Single Press
+      description: Action to run on single button press
       default: []
-      selector: { action: {} }
+      selector:
+        action: {}
     button_double_press:
       name: Double Press
+      description: Action to run on double button press
       default: []
-      selector: { action: {} }
+      selector:
+        action: {}
     button_long_press:
       name: Long Press
+      description: Action to run on long button press
       default: []
-      selector: { action: {} }
+      selector:
+        action: {}
     rotate_left:
       name: Rotate Left
+      description: Action to run when rotating counter-clockwise
       default: []
-      selector: { action: {} }
+      selector:
+        action: {}
     rotate_right:
       name: Rotate Right
+      description: Action to run when rotating clockwise
       default: []
-      selector: { action: {} }
+      selector:
+        action: {}
 
 mode: restart
 max_exceeded: silent
 
 trigger:
-  - platform: event
-    event_type: zha_event
-    event_data:
-      device_id: !input remote
+  # Button Press Triggers (from device_automation_triggers)
+  - platform: device
+    device_id: !input remote
+    domain: zha
+    type: remote_button_short_press
+    subtype: button
+    id: button_short
+
+  - platform: device
+    device_id: !input remote
+    domain: zha
+    type: remote_button_double_press
+    subtype: button
+    id: button_double
+
+  - platform: device
+    device_id: !input remote
+    domain: zha
+    type: remote_button_long_press
+    subtype: button
+    id: button_long
+
+  # Rotation Triggers (from device_automation_triggers)
+  - platform: device
+    device_id: !input remote
+    domain: zha
+    type: remote_rotate
+    subtype: left
+    id: rotate_left
+
+  - platform: device
+    device_id: !input remote
+    domain: zha
+    type: remote_rotate
+    subtype: right
+    id: rotate_right
 
 action:
-  - variables:
-      # Extract command and params for cleaner templates
-      command: "{{ trigger.event.data.command }}"
-      params: "{{ trigger.event.data.params }}"
-      # Handle both raw int and dict/object styles for step_mode
-      step_mode: >
-        {% if params.step_mode is defined %}
-          {% if params.step_mode is mapping %} {{ params.step_mode.value }}
-          {% else %} {{ params.step_mode }} {% endif %}
-        {% else %} none {% endif %}
-
   - choose:
       # --- BUTTON PRESSES ---
-      # Single Press (Dimmer mode uses 'toggle', Scene mode uses 'press_type' 0)
       - conditions:
-          - condition: template
-            value_template: "{{ command == 'toggle' or (command == 'press_type' and params.press_type == 0) }}"
+          - condition: trigger
+            id: button_short
         sequence: !input button_single_press
 
-      # Double Press (Scene mode uses 'press_type' 1)
       - conditions:
-          - condition: template
-            value_template: "{{ command == 'press_type' and params.press_type == 1 }}"
+          - condition: trigger
+            id: button_double
         sequence: !input button_double_press
 
-      # Long Press (Scene mode uses 'press_type' 2)
       - conditions:
-          - condition: template
-            value_template: "{{ command == 'press_type' and params.press_type == 2 }}"
+          - condition: trigger
+            id: button_long
         sequence: !input button_long_press
 
-      # --- ROTATION (RIGHT) ---
-      # Matches 'step' (Dimmer mode), 'right' (Scene mode), or 'step_color_temp' (Hold + Turn)
+      # --- ROTATION WITH DEBOUNCE ---
       - conditions:
-          - condition: template
-            value_template: >
-              {{ (command == 'step' and step_mode|int == 0) or 
-                 (command == 'right') or
-                 (command == 'step_color_temp' and step_mode|int == 1) }}
+          - condition: trigger
+            id: rotate_left
         sequence:
-          - delay: { milliseconds: !input rotation_debounce_delay }
-          - choose: []
-            default: !input rotate_right
-
-      # --- ROTATION (LEFT) ---
-      # Matches 'step' (Dimmer mode), 'left' (Scene mode), or 'step_color_temp' (Hold + Turn)
-      - conditions:
-          - condition: template
-            value_template: >
-              {{ (command == 'step' and step_mode|int == 1) or 
-                 (command == 'left') or
-                 (command == 'step_color_temp' and step_mode|int == 3) }}
-        sequence:
-          - delay: { milliseconds: !input rotation_debounce_delay }
+          - delay:
+              milliseconds: !input rotation_debounce_delay
           - choose: []
             default: !input rotate_left
+
+      - conditions:
+          - condition: trigger
+            id: rotate_right
+        sequence:
+          - delay:
+              milliseconds: !input rotation_debounce_delay
+          - choose: []
+            default: !input rotate_right
