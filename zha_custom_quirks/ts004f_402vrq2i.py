@@ -92,15 +92,17 @@ class TuyaSmartRemote004FRotaryDimmer(EnchantedDevice):
                     Basic.cluster_id,
                     TuyaNoBindPowerConfigurationCluster,
                     Identify.cluster_id,
+                    Groups.cluster_id,  # Added back to satisfy sanity check
+                    OnOff.cluster_id,  # Added back to satisfy sanity check
                     LightLink.cluster_id,
                 ],
                 OUTPUT_CLUSTERS: [
                     Ota.cluster_id,
                     Time.cluster_id,
                     Identify.cluster_id,
-                    Groups.cluster_id,
+                    Groups.cluster_id,  # Mirroring physical hardware
                     Scenes.cluster_id,
-                    TuyaSmartRemoteOnOffCluster,
+                    TuyaSmartRemoteOnOffCluster,  # The specialized Tuya output cluster
                     LevelControl.cluster_id,
                     Color.cluster_id,
                     LightLink.cluster_id,
