@@ -1,5 +1,5 @@
 blueprint:
-  name: "ZHA - TS004F Rotary Knob (Fixed)"
+  name: "ZHA - TS004F Rotary Knob"
   description: |
     Complete blueprint for Tuya TS004F rotary knob with DEVICE TRIGGERS.
     
