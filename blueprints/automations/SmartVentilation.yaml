@@ -170,4 +170,125 @@ action:
       windows: !input window_sensors
       room: !input room_name
       ah_threshold_entity: !input ah_threshold_helper
-      rh_threshold_
+      rh_threshold_entity: !input rh_limit_helper
+      notify_list: !input notify_services
+      cooldown: !input frequency_cooldown
+      quiet_start_entity: !input quiet_hours_start
+      quiet_end_entity: !input quiet_hours_end
+      last_notified_entity: !input last_notified_input
+      tag_id: "{{ 'vent_' ~ room | lower | replace(' ', '_') }}"
+
+      # Notification text templates
+      msg_open_title: !input notification_open_title
+      msg_open_body: !input notification_open_message
+      msg_close_title: !input notification_close_title
+      msg_close_body: !input notification_close_message
+
+      rh_in: "{{ states(rh_in_entity) | float(0) }}"
+
+      # Read thresholds from helpers
+      ah_limit: "{{ states(ah_threshold_entity) | float(3) }}"
+      rh_target: "{{ states(rh_threshold_entity) | float(50) }}"
+
+      # Read quiet hours from helpers
+      quiet_start: "{{ states(quiet_start_entity) }}"
+      quiet_end: "{{ states(quiet_end_entity) }}"
+
+      # Get current AH difference from sensor
+      delta_af: "{{ states(input_ah_diff) | float(0) }}"
+
+  - variables:
+      any_window_open: "{{ expand(windows) | selectattr('state', 'eq', 'on') | list | count > 0 }}"
+      notify_targets: "{{ notify_list.split('\n') | map('trim') | select() | list }}"
+      hours_since_notify: >
+        {% set last = states(last_notified_entity) %}
+        {% if last in ['unknown', 'unavailable', 'none'] %}
+          999
+        {% else %}
+          {{ ((as_timestamp(now()) - as_timestamp(last)) / 3600) | float(999) }}
+        {% endif %}
+
+      # Check if we're in quiet hours
+      in_quiet_hours: >
+        {% set current = now().strftime('%H:%M:%S') %}
+        {% if quiet_start < quiet_end %}
+          {{ current >= quiet_start and current < quiet_end }}
+        {% else %}
+          {{ current >= quiet_start or current < quiet_end }}
+        {% endif %}
+
+  - choose:
+      # OPTION 1: Window opened -> Clear notification
+      - conditions:
+          - condition: trigger
+            id: "window_opened"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_id }}"
+
+      # OPTION 2: Ventilation needed
+      - conditions:
+          - condition: template
+            value_template: "{{ delta_af > ah_limit }}"
+          - condition: template
+            value_template: "{{ rh_in > rh_target }}"
+          - condition: template
+            value_template: "{{ not in_quiet_hours }}"
+          - condition: template
+            value_template: "{{ not any_window_open }}"
+          - condition: template
+            value_template: "{{ hours_since_notify > cooldown }}"
+        sequence:
+          - service: input_datetime.set_datetime
+            target:
+              entity_id: !input last_notified_input
+            data:
+              datetime: "{{ now().isoformat() }}"
+
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: >
+                      {{ msg_open_title.replace('{room}', room) }}
+                    message: >
+                      {{ msg_open_body
+                         .replace('{room}', room)
+                         .replace('{humidity}', rh_in | round(0) | string)
+                         .replace('{ah_diff}', delta_af | round(1) | string) }}
+                    data:
+                      tag: "{{ tag_id }}"
+                      priority: high
+                      ttl: 0
+
+      # OPTION 3: Close window
+      - conditions:
+          - condition: template
+            value_template: "{{ delta_af <= (ah_limit / 2) }}"
+          - condition: template
+            value_template: "{{ any_window_open }}"
+        sequence:
+          - repeat:
+              for_each: "{{ notify_targets }}"
+              sequence:
+                - service: "{{ repeat.item }}"
+                  data:
+                    title: >
+                      {{ msg_close_title.replace('{room}', room) }}
+                    message: >
+                      {{ msg_close_body
+                         .replace('{room}', room)
+                         .replace('{ah_diff}', delta_af | round(1) | string) }}
+                    data:
+                      tag: "{{ tag_id }}"
+                      priority: high
+                      ttl: 0
+
+mode: single
