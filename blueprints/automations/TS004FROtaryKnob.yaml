@@ -13,6 +13,8 @@ blueprint:
     - Configurable rotation debounce delay (prevents accidental triggers during button presses)
     - Single, double, and long press actions
     - Works in both dimmer and scene modes automatically
+    - Brighten from OFF: rotating right turns the light on at a configurable brightness
+      (10% by default) when it is off, instead of doing nothing
     
     Compatible with various TS004F manufacturers including:
     - _TZ3000_402vrq2i
@@ -20,7 +22,7 @@ blueprint:
     - _TZ3000_qja6nq5z
     - _TZ3000_gwkzibhs
     
-    Version: 2.0 (Added configurable debounce delay)
+    Version: 2.1 (Added brighten-from-OFF support)
 
   domain: automation
 
@@ -76,6 +78,33 @@ blueprint:
           unit_of_measurement: "ms"
           mode: slider
 
+    # BRIGHTEN FROM OFF (optional, enabled by selecting a light)
+    light_entity:
+      name: Light entity (optional)
+      description: |
+        Select the light controlled by this knob to enable brightening from the OFF state.
+        When rotating right while this light is off, the light is turned on at the brightness
+        set below and the "Rotate Right" action is skipped. Leave empty to keep the old
+        behaviour (only the "Rotate Right" action runs).
+      default: []
+      selector:
+        entity:
+          domain: light
+          multiple: false
+
+    off_brightness:
+      name: Brightness when turning on from OFF
+      description: Brightness percentage used when the light is turned on by rotating right
+        while it is off. Default 10%.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+
     # ROTATION ACTIONS (Work in both modes)
     rotate_left:
       name: Rotate Left (Counter-clockwise)
@@ -86,7 +115,9 @@ blueprint:
 
     rotate_right:
       name: Rotate Right (Clockwise)
-      description: Action to run when rotating right. Works in both dimmer and scene modes.
+      description: Action to run when rotating right (brightening) while the light is on.
+        Works in both dimmer and scene modes. If a light is selected above and it is off,
+        the blueprint turns it on at the configured brightness instead of running this action.
       default: []
       selector:
         action: {}
@@ -96,6 +127,7 @@ max_exceeded: silent
 
 variables:
   remote: !input remote
+  brightness_light: !input light_entity
 
 trigger:
   # Single Press - Device trigger (most reliable)
@@ -205,8 +237,20 @@ action:
         sequence:
           - delay:
               milliseconds: !input rotation_debounce_delay
-          - choose: []
-            default: !input rotate_right
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ brightness_light is string and brightness_light | length > 0
+                     and states(brightness_light) == 'off' }}
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: !input light_entity
+                data:
+                  brightness_pct: !input off_brightness
+            else:
+              - choose: []
+                default: !input rotate_right
 
       # ROTATE LEFT - Mode 2 (Scene mode - Left button)
       - conditions:
@@ -225,8 +269,20 @@ action:
         sequence:
           - delay:
               milliseconds: !input rotation_debounce_delay
-          - choose: []
-            default: !input rotate_right
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ brightness_light is string and brightness_light | length > 0
+                     and states(brightness_light) == 'off' }}
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: !input light_entity
+                data:
+                  brightness_pct: !input off_brightness
+            else:
+              - choose: []
+                default: !input rotate_right
 
       # ROTATE LEFT - Alternative (rotate_type: 1)
       - conditions:
@@ -249,5 +305,17 @@ action:
         sequence:
           - delay:
               milliseconds: !input rotation_debounce_delay
-          - choose: []
-            default: !input rotate_right
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ brightness_light is string and brightness_light | length > 0
+                     and states(brightness_light) == 'off' }}
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: !input light_entity
+                data:
+                  brightness_pct: !input off_brightness
+            else:
+              - choose: []
+                default: !input rotate_right
